@@ -1,0 +1,42 @@
+diff --git a/source/shared.h b/source/shared.h
+--- a/source/shared.h
++++ b/source/shared.h
+@@ -1246,7 +1246,7 @@
+ #ifdef HAVE_RUNTIME_OPTIMIZER
+ void scene_reset_impl(void); // Resets drawing scene when the fast check detects a change
+ static inline __attribute__((always_inline)) void scene_reset(void) {
+-	if (__builtin_expect(in_use_framebuffer != active_write_fb || needs_scene_reset || dirty_framebuffer || dirty_query, 0))
++	if (__builtin_expect(in_use_framebuffer != active_write_fb || needs_scene_reset || dirty_framebuffer || dirty_query || dirty_scissor_state, 0))
+ 		scene_reset_impl();
+ }
+ #else
+diff --git a/source/draw.c b/source/draw.c
+--- a/source/draw.c
++++ b/source/draw.c
+@@ -183,5 +183,5 @@
+ #if defined(HAVE_COMMON_DRAW_FAST_PATH) && (!defined(HAVE_UNSAFE_COMMON_DRAW_ENTRY_FAST_PATH) || defined(HAVE_DLISTS) || defined(DEBUG_THREAD_SAFENESS))
+-	if (mode == GL_TRIANGLES && count >= 3 && count <= MAX_IDX_NUMBER && !no_polygons_mode && cur_program && in_use_framebuffer == active_write_fb && !needs_scene_reset && !dirty_framebuffer && !dirty_query) {
++	if (mode == GL_TRIANGLES && count >= 3 && count <= MAX_IDX_NUMBER && !no_polygons_mode && cur_program && in_use_framebuffer == active_write_fb && !needs_scene_reset && !dirty_framebuffer && !dirty_query && !dirty_scissor_state) {
+ 		draw_arrays_custom_triangles(first, count);
+ 		return;
+ 	}
+@@ -239,5 +239,5 @@
+ void __attribute__((hot)) glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+-	if (__builtin_expect(mode == GL_TRIANGLES, 1) && count >= 3 && count <= MAX_IDX_NUMBER && !no_polygons_mode && cur_program && in_use_framebuffer == active_write_fb && !needs_scene_reset && !dirty_framebuffer && !dirty_query) {
++	if (__builtin_expect(mode == GL_TRIANGLES, 1) && count >= 3 && count <= MAX_IDX_NUMBER && !no_polygons_mode && cur_program && in_use_framebuffer == active_write_fb && !needs_scene_reset && !dirty_framebuffer && !dirty_query && !dirty_scissor_state) {
+ 		draw_arrays_custom_triangles(first, count);
+ 		return;
+ 	}
+diff --git a/source/tests.c b/source/tests.c
+--- a/source/tests.c
++++ b/source/tests.c
+@@ -355,6 +355,9 @@
+ 	// Restoring original stencil test settings
+ 	refresh_stencil_settings();
+ 
++	/* Raw GXM uniform reservation bypassed the binding cache. Do not let the
++	 * saved game buffer be mistaken for the temporary mask buffer binding. */
++	vgl_optimizer_scene_reset();
+ 	vglRestoreVertexUniformBuffer();
+ 
+ 	dirty_scissor_state = GL_FALSE;

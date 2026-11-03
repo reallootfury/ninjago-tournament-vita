@@ -1,0 +1,21 @@
+diff --git a/libopensles/IOutputMixExt.c b/libopensles/IOutputMixExt.c
+--- a/libopensles/IOutputMixExt.c
++++ b/libopensles/IOutputMixExt.c
+@@ -140,9 +140,17 @@ static SLboolean track_check(Track *track)
+         switch (audioPlayer->mPlay.mState) {
+ 
+         case SL_PLAYSTATE_PLAYING:  // continue playing current track data
++            /*
++             * Gain updates are synchronous on the application thread, but an
++             * active one-shot buffer used to keep the gain captured when that
++             * buffer began. Refresh it under the player lock on every mixer
++             * pass so unmute/volume changes affect the current buffer too.
++             */
++            track->mGains[0] = audioPlayer->mGains[0];
++            track->mGains[1] = audioPlayer->mGains[1];
+             if (0 < track->mAvail) {
+                 trackHasData = SL_BOOLEAN_TRUE;
+                 break;
+             }
+ 
+             // try to get another buffer from queue

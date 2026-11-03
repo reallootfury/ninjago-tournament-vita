@@ -1,0 +1,57 @@
+diff --git a/libopensles/IOutputMixExt.c b/libopensles/IOutputMixExt.c
+index b4fa42a..8b54f0c 100644
+--- a/libopensles/IOutputMixExt.c
++++ b/libopensles/IOutputMixExt.c
+@@ -33,6 +33,18 @@ typedef struct {
+     short right;
+ } stereo;
+ 
++static inline short saturating_add(short destination, short source)
++{
++    int mixed = (int) destination + (int) source;
++    if (mixed > 32767) {
++        return 32767;
++    }
++    if (mixed < -32768) {
++        return -32768;
++    }
++    return (short) mixed;
++}
++
+ 
+ /** \brief Summary of the gain, as an optimization for the mixer */
+ 
+@@ -229,6 +241,9 @@ void IOutputMixExt_FillBuffer(SLOutputMixExtItf self, void *pBuffer, SLuint32 si
+ 
+     // Force to be a multiple of a frame, assumes stereo 16-bit PCM
+     size &= ~3;
++    // A short one-shot may end before the hardware buffer. Start with silence
++    // so its unused tail cannot replay samples left by the previous callback.
++    memset(pBuffer, 0, size);
+     SLboolean mixBufferHasData = SL_BOOLEAN_FALSE;
+     IOutputMixExt *this = (IOutputMixExt *) self;
+     IObject *thisObject = this->mThis;
+@@ -309,13 +324,19 @@ void IOutputMixExt_FillBuffer(SLOutputMixExtItf self, void *pBuffer, SLuint32 si
+                         if (GAIN_UNITY != summaries[0] || GAIN_UNITY != summaries[1]) {
+                             for (j = 0; j < actual; j += sizeof(stereo), ++mixBuffer, ++source) {
+-                                mixBuffer->left += (short) (source->left * track->mGains[0]);
+-                                mixBuffer->right += (short) (source->right * track->mGains[1]);
++                                mixBuffer->left = saturating_add(
++                                    mixBuffer->left,
++                                    (short) (source->left * track->mGains[0]));
++                                mixBuffer->right = saturating_add(
++                                    mixBuffer->right,
++                                    (short) (source->right * track->mGains[1]));
+                             }
+                         // no gain adjustment needed, so do a simple add
+                         } else {
+                             for (j = 0; j < actual; j += sizeof(stereo), ++mixBuffer, ++source) {
+-                                mixBuffer->left += source->left;
+-                                mixBuffer->right += source->right;
++                                mixBuffer->left = saturating_add(
++                                    mixBuffer->left, source->left);
++                                mixBuffer->right = saturating_add(
++                                    mixBuffer->right, source->right);
+                             }
+                         }
+                     } else {

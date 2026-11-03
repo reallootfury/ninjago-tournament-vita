@@ -1,0 +1,67 @@
+diff --git a/libopensles/IBufferQueue.c b/libopensles/IBufferQueue.c
+--- a/libopensles/IBufferQueue.c
++++ b/libopensles/IBufferQueue.c
+@@ -20,5 +20,10 @@
+ volatile uint32_t opensles_vita_enqueue_count;
+ volatile uint32_t opensles_vita_enqueue_failures;
++volatile uint32_t opensles_vita_direct_enqueue_count;
++volatile uint32_t opensles_vita_direct_nonzero_count;
++volatile uint32_t opensles_vita_direct_enqueue_bytes;
++volatile uint32_t opensles_vita_stream_enqueue_count;
++volatile uint32_t opensles_vita_stream_enqueue_bytes;
+ volatile uint32_t opensles_vita_last_source_rate;
+ volatile uint32_t opensles_vita_last_source_channels;
+ volatile uint32_t opensles_vita_last_source_bits;
+@@ -194,7 +199,25 @@ SLresult IBufferQueue_Enqueue(SLBufferQueueItf self, const void *pBuffer, SLuint
+             opensles_vita_last_source_bits = bits;
+             ++opensles_vita_enqueue_count;
+             if (SL_OBJECTID_AUDIOPLAYER == InterfaceToObjectID(this)) {
+                 CAudioPlayer *audioPlayer = (CAudioPlayer *) this->mThis;
++                SLuint32 locator =
++                    audioPlayer->mDataSource.mLocator.mLocatorType;
++                if (locator == SL_DATALOCATOR_BUFFERQUEUE ||
++                        locator == SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE) {
++                    ++opensles_vita_direct_enqueue_count;
++                    opensles_vita_direct_enqueue_bytes += output_size;
++                    const uint8_t *samples = (const uint8_t *)pBuffer;
++                    for (uint32_t byte = 0; byte < output_size; ++byte) {
++                        if (samples[byte] != 0) {
++                            ++opensles_vita_direct_nonzero_count;
++                            break;
++                        }
++                    }
++                } else if (locator == SL_DATALOCATOR_URI ||
++                           locator == SL_DATALOCATOR_ANDROIDFD) {
++                    ++opensles_vita_stream_enqueue_count;
++                    opensles_vita_stream_enqueue_bytes += output_size;
++                }
+                 audioPlayer->mPlay.mHeadAtEnd = SL_BOOLEAN_FALSE;
+                 audioPlayer->mPlay.mHeadStalled = SL_BOOLEAN_FALSE;
+             }
+diff --git a/libopensles/IOutputMixExt.c b/libopensles/IOutputMixExt.c
+--- a/libopensles/IOutputMixExt.c
++++ b/libopensles/IOutputMixExt.c
+@@ -21,5 +21,7 @@
+ 
+ volatile uint32_t opensles_vita_player_count;
+ volatile uint32_t opensles_vita_player_failures;
++volatile uint32_t opensles_vita_direct_mix_chunks;
++volatile uint32_t opensles_vita_direct_muted_chunks;
+ 
+ 
+@@ -315,4 +317,15 @@ void IOutputMixExt_FillBuffer(SLOutputMixExtItf self, void *pBuffer, SLuint32 si
+             // force actual to be a frame multiple
+             if (actual > 0) {
+                 assert(NULL != track->mReader);
++                SLuint32 locator = track->mAudioPlayer->mDataSource.mLocator
++                                       .mLocatorType;
++                if (locator == SL_DATALOCATOR_BUFFERQUEUE ||
++                        locator == SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE) {
++                    if (GAIN_MUTE == summaries[0] &&
++                        GAIN_MUTE == summaries[1]) {
++                        ++opensles_vita_direct_muted_chunks;
++                    } else {
++                        ++opensles_vita_direct_mix_chunks;
++                    }
++                }
+                 stereo *mixBuffer = (stereo *) dstWriter;

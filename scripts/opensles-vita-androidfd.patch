@@ -1,0 +1,224 @@
+diff --git a/libopensles/CAudioPlayer.c b/libopensles/CAudioPlayer.c
+index f383d37..7884d8a 100644
+--- a/libopensles/CAudioPlayer.c
++++ b/libopensles/CAudioPlayer.c
+@@ -31,7 +31,9 @@ SLresult CAudioPlayer_Realize(void *self, SLboolean async)
+ #endif
+ 
+ #ifdef USE_SNDFILE
+-    if (SL_DATALOCATOR_URI == this->mDataSource.mLocator.mLocatorType) {
++    if (SL_DATALOCATOR_URI == this->mDataSource.mLocator.mLocatorType ||
++            SL_DATALOCATOR_ANDROIDFD ==
++                this->mDataSource.mLocator.mLocatorType) {
+         result = SndFile_Realize(this);
+     }
+ #endif
+diff --git a/libopensles/sles.c b/libopensles/sles.c
+index 62c6c93..d97fbad 100644
+--- a/libopensles/sles.c
++++ b/libopensles/sles.c
+@@ -699,14 +699,15 @@ SLresult checkSourceFormatVsInterfacesCompatibility(const DataLocatorFormat *pD
+         }
+         break;
+     case SL_DATALOCATOR_URI:
++    case SL_DATALOCATOR_ANDROIDFD:
+         if (SL_DATAFORMAT_MIME != pDataLocatorFormat->mFormat.mFormatType) {
+-            SL_LOGE("URI data sources require SL_DATAFORMAT_MIME");
++            SL_LOGE("URI and Android FD data sources require SL_DATAFORMAT_MIME");
+             return SL_RESULT_CONTENT_UNSUPPORTED;
+         }
+         break;
+     default:
+         if (SL_DATAFORMAT_MIME == pDataLocatorFormat->mFormat.mFormatType) {
+-            SL_LOGE("SL_DATAFORMAT_MIME is only valid with URI data sources");
++            SL_LOGE("SL_DATAFORMAT_MIME requires a URI or Android FD data source");
+             return SL_RESULT_CONTENT_UNSUPPORTED;
+         }
+         for (i = 0; i < numInterfaces; i++) {
+diff --git a/libopensles/SndFile.c b/libopensles/SndFile.c
+index 8ce5ac2..7a7ac52 100644
+--- a/libopensles/SndFile.c
++++ b/libopensles/SndFile.c
+@@ -18,6 +18,8 @@
+ 
+ #include "sles_allinclusive.h"
+ 
++extern SNDFILE *sf_open_android_fd(SLint32 fd, SLAint64 offset,
++        SLAint64 length, int mode, SF_INFO *info);
+ 
+ static SLpermille sndfile_compute_fill_level(SLuint32 queuedBufferCount, SLuint16 totalBuffers)
+ {
+@@ -34,4 +36,8 @@ static void sndfile_update_prefetch_status(CAudioPlayer *audioPlayer, SLuint32
+ {
++    if (!IsInterfaceInitialized(&audioPlayer->mObject, MPH_PREFETCHSTATUS)) {
++        return;
++    }
++
+     slPrefetchCallback callback = NULL;
+     void *context = NULL;
+ 
+@@ -55,4 +61,8 @@ static void sndfile_update_prefetch_fill_level(CAudioPlayer *audioPlayer, SLper
+ {
++    if (!IsInterfaceInitialized(&audioPlayer->mObject, MPH_PREFETCHSTATUS)) {
++        return;
++    }
++
+     slPrefetchCallback callback = NULL;
+     void *context = NULL;
+ 
+@@ -84,6 +86,7 @@ static void sndfile_update_prefetch_fill_level(CAudioPlayer *audioPlayer, SLperm
+ void audioPlayerRefillBuffers(CAudioPlayer *audioPlayer)
+ {
+     struct SndFile *this = &audioPlayer->mSndFile;
++    SLboolean loopRestartAttempted = SL_BOOLEAN_FALSE;
+ 
+     if (NULL == this->mSNDFILE) {
+         return;
+@@ -119,6 +122,7 @@ void audioPlayerRefillBuffers(CAudioPlayer *audioPlayer)
+         pthread_mutex_unlock(&this->mMutex);
+ 
+         if (0 < count) {
++            loopRestartAttempted = SL_BOOLEAN_FALSE;
+             SLresult result = IBufferQueue_Enqueue(&audioPlayer->mBufferQueue.mItf, pBuffer,
+                 (SLuint32) (count * sizeof(short)));
+             if (SL_RESULT_SUCCESS != result) {
+@@ -129,6 +133,32 @@ void audioPlayerRefillBuffers(CAudioPlayer *audioPlayer)
+             continue;
+         }
+ 
++        object_lock_exclusive(&audioPlayer->mObject);
++        SLboolean loopEnabled = audioPlayer->mSeek.mLoopEnabled;
++        SLmillisecond loopStart = audioPlayer->mSeek.mStartPos;
++        object_unlock_exclusive(&audioPlayer->mObject);
++        if (loopEnabled && !loopRestartAttempted) {
++            pthread_mutex_lock(&this->mMutex);
++            sf_count_t loopFrame = (sf_count_t)
++                (((long long)loopStart * this->mSfInfo.samplerate) / 1000LL);
++            sf_count_t seekResult = sf_seek(this->mSNDFILE, loopFrame, SEEK_SET);
++            if (seekResult >= 0) {
++                this->mEOF = SL_BOOLEAN_FALSE;
++                this->mWhich = 0;
++            }
++            pthread_mutex_unlock(&this->mMutex);
++            if (seekResult >= 0) {
++                object_lock_exclusive(&audioPlayer->mObject);
++                audioPlayer->mPlay.mPosition = loopStart;
++                audioPlayer->mPlay.mLastSeekPosition = loopStart;
++                audioPlayer->mPlay.mFramesSinceLastSeek = 0;
++                audioPlayer->mPlay.mHeadAtEnd = SL_BOOLEAN_FALSE;
++                object_unlock_exclusive(&audioPlayer->mObject);
++                loopRestartAttempted = SL_BOOLEAN_TRUE;
++                continue;
++            }
++        }
++
+         object_lock_exclusive(&audioPlayer->mObject);
+         slPlayCallback callback = NULL;
+         void *context = NULL;
+@@ -192,23 +194,24 @@ SLboolean SndFile_IsSupported(const SF_INFO *sfinfo)
+ {
+     switch (sfinfo->format & SF_FORMAT_TYPEMASK) {
+     case SF_FORMAT_WAV:
++        switch (sfinfo->format & SF_FORMAT_SUBMASK) {
++        case SF_FORMAT_PCM_U8:
++        case SF_FORMAT_PCM_16:
++            break;
++        default:
++            return SL_BOOLEAN_FALSE;
++        }
+         break;
+-    default:
+-        return SL_BOOLEAN_FALSE;
+-    }
+-    switch (sfinfo->format & SF_FORMAT_SUBMASK) {
+-    case SF_FORMAT_PCM_U8:
+-    case SF_FORMAT_PCM_16:
++    case SF_FORMAT_MPEG:
++        if ((sfinfo->format & SF_FORMAT_SUBMASK) !=
++                SF_FORMAT_MPEG_LAYER_III) {
++            return SL_BOOLEAN_FALSE;
++        }
+         break;
+     default:
+         return SL_BOOLEAN_FALSE;
+     }
+-    switch (sfinfo->samplerate) {
+-    case 11025:
+-    case 22050:
+-    case 44100:
+-        break;
+-    default:
++    if (sfinfo->samplerate < 8000 || sfinfo->samplerate > 48000) {
+         return SL_BOOLEAN_FALSE;
+     }
+     switch (sfinfo->channels) {
+@@ -229,6 +232,10 @@ SLresult SndFile_checkAudioPlayerSourceSink(CAudioPlayer *this)
+     const SLDataSource *pAudioSrc = &this->mDataSource.u.mSource;
+     SLuint32 locatorType = *(SLuint32 *)pAudioSrc->pLocator;
+     SLuint32 formatType = *(SLuint32 *)pAudioSrc->pFormat;
++    this->mSndFile.mPathname = NULL;
++    this->mSndFile.mFD = -1;
++    this->mSndFile.mOffset = 0;
++    this->mSndFile.mLength = 0;
+     switch (locatorType) {
+     case SL_DATALOCATOR_BUFFERQUEUE:
+     case SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE:
+@@ -253,6 +260,22 @@ SLresult SndFile_checkAudioPlayerSourceSink(CAudioPlayer *this)
+         this->mBufferQueue.mNumBuffers = SndFile_NUMBUFS;
+         }
+         break;
++    case SL_DATALOCATOR_ANDROIDFD:
++        {
++        const SLDataLocator_AndroidFD *dl_fd =
++            (const SLDataLocator_AndroidFD *) pAudioSrc->pLocator;
++        if (formatType != SL_DATAFORMAT_MIME || dl_fd->fd < 0 ||
++                dl_fd->offset < 0 ||
++                (dl_fd->length <= 0 &&
++                 dl_fd->length != SL_DATALOCATOR_ANDROIDFD_USE_FILE_SIZE)) {
++            return SL_RESULT_PARAMETER_INVALID;
++        }
++        this->mSndFile.mFD = dl_fd->fd;
++        this->mSndFile.mOffset = dl_fd->offset;
++        this->mSndFile.mLength = dl_fd->length;
++        this->mBufferQueue.mNumBuffers = SndFile_NUMBUFS;
++        }
++        break;
+     default:
+         return SL_RESULT_CONTENT_UNSUPPORTED;
+     }
+@@ -342,10 +365,18 @@ void audioPlayerTransportUpdate(CAudioPlayer *audioPlayer)
+ SLresult SndFile_Realize(CAudioPlayer *this)
+ {
+     SLresult result = SL_RESULT_SUCCESS;
+-    if (NULL != this->mSndFile.mPathname) {
++    if (NULL != this->mSndFile.mPathname || this->mSndFile.mFD >= 0) {
+         this->mSndFile.mSfInfo.format = 0;
+-        this->mSndFile.mSNDFILE = sf_open(
+-            (const char *) this->mSndFile.mPathname, SFM_READ, &this->mSndFile.mSfInfo);
++        if (this->mSndFile.mFD >= 0) {
++            this->mSndFile.mSNDFILE = sf_open_android_fd(
++                this->mSndFile.mFD, this->mSndFile.mOffset,
++                this->mSndFile.mLength, SFM_READ,
++                &this->mSndFile.mSfInfo);
++        } else {
++            this->mSndFile.mSNDFILE = sf_open(
++                (const char *) this->mSndFile.mPathname, SFM_READ,
++                &this->mSndFile.mSfInfo);
++        }
+         if (NULL == this->mSndFile.mSNDFILE) {
+             result = SL_RESULT_CONTENT_NOT_FOUND;
+         } else if (!SndFile_IsSupported(&this->mSndFile.mSfInfo)) {
+diff --git a/libopensles/sles_allinclusive.h b/libopensles/sles_allinclusive.h
+index 9b7a0b5..47fd882 100644
+--- a/libopensles/sles_allinclusive.h
++++ b/libopensles/sles_allinclusive.h
+@@ -247,6 +247,9 @@ static inline void BufferHeader_release(BufferHeader *header)
+ struct SndFile {
+     // save URI also?
+     SLchar *mPathname;
++    SLint32 mFD;
++    SLAint64 mOffset;
++    SLAint64 mLength;
+     SNDFILE *mSNDFILE;
+     SF_INFO mSfInfo;
+     pthread_mutex_t mMutex; // protects mSNDFILE only

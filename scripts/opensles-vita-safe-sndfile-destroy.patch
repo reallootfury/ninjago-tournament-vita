@@ -1,0 +1,80 @@
+diff --git a/libopensles/SndFile.c b/libopensles/SndFile.c
+--- a/libopensles/SndFile.c
++++ b/libopensles/SndFile.c
+@@ -113,7 +113,7 @@ void audioPlayerRefillBuffers(CAudioPlayer *audioPlayer)
+         }
+ 
+         pthread_mutex_lock(&this->mMutex);
+-        if (this->mEOF) {
++        if (NULL == this->mSNDFILE || this->mEOF) {
+             pthread_mutex_unlock(&this->mMutex);
+             return;
+         }
+@@ -146,7 +146,8 @@ void audioPlayerRefillBuffers(CAudioPlayer *audioPlayer)
+             pthread_mutex_lock(&this->mMutex);
+             sf_count_t loopFrame = (sf_count_t)
+                 (((long long)loopStart * this->mSfInfo.samplerate) / 1000LL);
+-            sf_count_t seekResult = sf_seek(this->mSNDFILE, loopFrame, SEEK_SET);
++            sf_count_t seekResult = NULL != this->mSNDFILE
++                ? sf_seek(this->mSNDFILE, loopFrame, SEEK_SET) : -1;
+             if (seekResult >= 0) {
+                 this->mEOF = SL_BOOLEAN_FALSE;
+                 this->mWhich = 0;
+@@ -366,9 +367,12 @@ void audioPlayerTransportUpdate(CAudioPlayer *audioPlayer)
+             sndfile_update_prefetch_fill_level(audioPlayer, 0);
+ 
+             pthread_mutex_lock(&audioPlayer->mSndFile.mMutex);
+-            sf_count_t seekResult = sf_seek(audioPlayer->mSndFile.mSNDFILE,
+-                (sf_count_t) (((long long) pos * audioPlayer->mSndFile.mSfInfo.samplerate) / 1000LL),
+-                SEEK_SET);
++            sf_count_t seekResult = NULL != audioPlayer->mSndFile.mSNDFILE
++                ? sf_seek(audioPlayer->mSndFile.mSNDFILE,
++                    (sf_count_t) (((long long) pos *
++                        audioPlayer->mSndFile.mSfInfo.samplerate) / 1000LL),
++                    SEEK_SET)
++                : -1;
+             if (seekResult >= 0) {
+                 audioPlayer->mSndFile.mEOF = SL_BOOLEAN_FALSE;
+                 audioPlayer->mSndFile.mWhich = 0;
+@@ -454,10 +458,36 @@ SLresult SndFile_Realize(CAudioPlayer *this)
+ void SndFile_Destroy(CAudioPlayer *this)
+ {
+     if (NULL != this->mSndFile.mSNDFILE) {
+-        sf_close(this->mSndFile.mSNDFILE);
+-        this->mSndFile.mSNDFILE = NULL;
+-        int ok;
+-        ok = pthread_mutex_destroy(&this->mSndFile.mMutex);
+-        assert(0 == ok);
++        /*
++         * A final refill can still be leaving sf_read_short while the mixer
++         * acknowledges CAudioPlayer_PreDestroy. Serialize sf_close with that
++         * reader before destroying its mutex. Vita's pthread implementation
++         * correctly returns EBUSY here; asserting on that normal race killed
++         * the game during rapid music-player transitions.
++         */
++        int ok = pthread_mutex_lock(&this->mSndFile.mMutex);
++        if (0 == ok) {
++            SNDFILE *sndfile = this->mSndFile.mSNDFILE;
++            this->mSndFile.mSNDFILE = NULL;
++            sf_close(sndfile);
++            ok = pthread_mutex_unlock(&this->mSndFile.mMutex);
++            if (0 != ok) {
++                SL_LOGE("SndFile_Destroy mutex unlock failed: %d", ok);
++                return;
++            }
++            unsigned int attempts = 0;
++            do {
++                ok = pthread_mutex_destroy(&this->mSndFile.mMutex);
++                if (EBUSY == ok) {
++                    usleep(1000);
++                }
++            } while (EBUSY == ok && ++attempts < 100);
++            if (0 != ok) {
++                SL_LOGE("SndFile_Destroy mutex destroy failed after draining "
++                        "readers: %d", ok);
++            }
++        } else {
++            SL_LOGE("SndFile_Destroy mutex lock failed: %d", ok);
++        }
+     }
+ }
