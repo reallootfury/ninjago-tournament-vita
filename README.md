@@ -1,4 +1,6 @@
-AI disclosure: This PS Vita port was fully built by AI under human direction, with human hardware testing. The original game and third-party components retain their respective authorship and credits.
+#AI Disclosure
+
+This PS Vita port was fully built by AI under human direction, with human hardware testing. The original game and third-party components retain their respective authorship and credits.
 
 # Ninjago Tournament for PS Vita
 
@@ -150,9 +152,6 @@ The verifier checks the embedded eboot, SFO, revision, logging mode, ABI and
 LiveArea hashes. Keep the matching unstripped ELF when reporting a crash.
 
 ## Screenshots
-
-User-provided screenshots are kept in [`extras/screenshots/`](extras/screenshots/).
-They are not included in the VPK.
 
 ![Gameplay](extras/screenshots/2026-11-02-193348.png)
 ![Gameplay](extras/screenshots/2026-11-02-193422.png)
