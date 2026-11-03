@@ -1,4 +1,4 @@
-#AI Disclosure
+# AI Disclosure
 
 This PS Vita port was fully built by AI under human direction, with human hardware testing. The original game and third-party components retain their respective authorship and credits.
 
