@@ -1,3 +1,5 @@
+AI disclosure: This PS Vita port was fully built by AI under human direction, with human hardware testing. The original game and third-party components retain their respective authorship and credits.
+
 # Ninjago Tournament for PS Vita
 
 An Android ARMv7 compatibility port of LEGO Ninjago Tournament using vitaGL.
